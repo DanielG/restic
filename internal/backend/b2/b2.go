@@ -12,6 +12,7 @@ import (
 	"github.com/restic/restic/internal/restic"
 
 	"github.com/kurin/blazer/b2"
+	"github.com/kurin/blazer/base"
 )
 
 // b2Backend is a backend which stores its data on Backblaze B2.
@@ -20,6 +21,7 @@ type b2Backend struct {
 	bucket       *b2.Bucket
 	cfg          Config
 	listMaxItems int
+	canDelete    bool
 	backend.Layout
 	sem *backend.Semaphore
 }
@@ -70,6 +72,7 @@ func Open(ctx context.Context, cfg Config, rt http.RoundTripper) (restic.Backend
 			Path: cfg.Prefix,
 		},
 		listMaxItems: defaultListMaxItems,
+		canDelete:    true,
 		sem:          sem,
 	}
 
@@ -253,7 +256,22 @@ func (be *b2Backend) Remove(ctx context.Context, h restic.Handle) error {
 	defer be.sem.ReleaseToken()
 
 	obj := be.bucket.Object(be.Filename(h))
-	return errors.Wrap(obj.Delete(ctx), "Delete")
+
+	if be.canDelete {
+		err := errors.Wrap(obj.Delete(ctx), "Delete")
+		if err != nil {
+			code, _ := base.Code(err)
+			if code == 401 { // unauthorized
+				be.canDelete = false
+			} else {
+				return err
+			}
+		} else {
+			return err
+		}
+	}
+
+	return errors.Wrap(obj.Hide(ctx), "Hide")
 }
 
 type semLocker struct {
